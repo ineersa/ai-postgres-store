@@ -1,6 +1,11 @@
 CHANGELOG
 =========
 
+0.15
+----
+
+ * Support `where`/`params` filtering for HybridQuery
+
 0.14
 ----
 
