@@ -3,11 +3,19 @@ PostgreSQL pgvector Store
 
 Provides [PostgreSQL with pgvector](https://github.com/pgvector/pgvector) vector store integration for Symfony AI Store.
 
+`Store::setup()` creates the table, the vector index, and a matching GIN expression
+index on `to_tsvector(<lang>, metadata->>'_text')` for text and hybrid queries that
+use that same expression. Existing tables created before this change need that GIN
+index added separately; calling `setup()` again on a populated table creates it
+without `CONCURRENTLY`.
+
 pgvector Documentation
 ----------------------
 
  * [pgvector (operators, indexes, vector/halfvec types)](https://github.com/pgvector/pgvector)
  * [PostgreSQL full-text search](https://www.postgresql.org/docs/current/textsearch.html)
+ * [Creating matching full-text expression indexes](https://www.postgresql.org/docs/current/textsearch-tables.html#TEXTSEARCH-TABLES-INDEX)
+ * [Preferred full-text index types (GIN)](https://www.postgresql.org/docs/current/textsearch-indexes.html)
 
 Resources
 ---------

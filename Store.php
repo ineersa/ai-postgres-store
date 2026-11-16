@@ -89,6 +89,14 @@ final class Store implements ManagedStoreInterface, StoreInterface
                 $indexOpclass,
             ),
         );
+        $this->connection->exec(
+            \sprintf(
+                'CREATE INDEX IF NOT EXISTS "%s_text_gin" ON "%s" USING GIN (to_tsvector(\'%s\', metadata->>\'_text\'))',
+                $this->tableName,
+                $this->tableName,
+                $this->lang,
+            ),
+        );
     }
 
     public function drop(array $options = []): void

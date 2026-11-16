@@ -399,7 +399,7 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $pdo->expects($this->exactly(3))
+        $pdo->expects($this->exactly(4))
             ->method('exec')
             ->willReturnCallback(function (string $sql): int {
                 /** @var int $callCount */
@@ -411,8 +411,10 @@ final class StoreTest extends TestCase
                 } elseif (2 === $callCount) {
                     $this->assertStringContainsString('CREATE TABLE IF NOT EXISTS "embeddings_table"', $sql);
                     $this->assertStringContainsString('"embedding" vector(1536) NOT NULL', $sql);
-                } else {
+                } elseif (3 === $callCount) {
                     $this->assertStringContainsString('CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx"', $sql);
+                } else {
+                    $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_gin" ON "embeddings_table" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $sql);
                 }
 
                 return 0;
@@ -444,7 +446,7 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $pdo->expects($this->exactly(3))
+        $pdo->expects($this->exactly(4))
             ->method('exec')
             ->willReturnCallback(function (string $sql): int {
                 /** @var int $callCount */
@@ -470,7 +472,7 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
 
         $statements = [];
-        $pdo->expects($this->exactly(3))
+        $pdo->expects($this->exactly(4))
             ->method('exec')
             ->willReturnCallback(static function (string $sql) use (&$statements): int {
                 $statements[] = $sql;
@@ -482,6 +484,7 @@ final class StoreTest extends TestCase
         $store->setup($options);
 
         $this->assertSame($expectedIndex, $statements[2]);
+        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_gin" ON "embeddings_table" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $statements[3]);
     }
 
     /**
@@ -496,6 +499,27 @@ final class StoreTest extends TestCase
         yield 'halfvec' => [Distance::Cosine, ['vector_type' => 'halfvec'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" halfvec_cosine_ops)'];
         yield 'ivfflat' => [Distance::InnerProduct, ['index_method' => 'ivfflat'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING ivfflat ("embedding" vector_ip_ops)'];
         yield 'explicit index' => [Distance::L2, ['index_method' => 'ivfflat', 'index_opclass' => 'vector_cosine_ops'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING ivfflat ("embedding" vector_cosine_ops)'];
+    }
+
+    public function testSetupCreatesTextIndexMatchingConfiguredLanguage()
+    {
+        $pdo = $this->createMock(\PDO::class);
+
+        $statements = [];
+        $pdo->expects($this->exactly(4))
+            ->method('exec')
+            ->willReturnCallback(static function (string $sql) use (&$statements): int {
+                $statements[] = $sql;
+
+                return 0;
+            });
+
+        $store = new Store($pdo, 'embeddings_table', 'text', lang: 'simple');
+        $store->setup();
+
+        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_idx" ON "embeddings_table" USING hnsw ("text" vector_l2_ops)', $statements[2]);
+        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_gin" ON "embeddings_table" USING GIN (to_tsvector(\'simple\', metadata->>\'_text\'))', $statements[3]);
+        $this->assertNotSame($statements[2], $statements[3]);
     }
 
     public function testSetupRejectsUnsupportedVectorType()
