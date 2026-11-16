@@ -17,8 +17,6 @@ accelerates lexical matching.
 
 HybridQuery accepts the same optional `where`/`params` filters as vector queries. They are AND-combined with any keyword-only lexical predicate and `maxScore`, and do not restore a mandatory lexical gate for mixed ranking.
 
-HybridQuery selects the top scored IDs first, then joins those rows to fetch embeddings and metadata only for the selected documents.
-
 Writes keep inserting only `id`, `metadata`, and the vector field. PostgreSQL
 computes `search_tsv` automatically. The vector field name cannot be
 `search_tsv`.
