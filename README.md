@@ -9,6 +9,14 @@ use that same expression. Existing tables created before this change need that G
 index added separately; calling `setup()` again on a populated table creates it
 without `CONCURRENTLY`.
 
+This package names the GIN index `<table>_text_gin` when that fits PostgreSQL's
+63-byte identifier limit, otherwise a deterministic SHA-256 prefix of the full
+table name plus `_text_gin`. Future upstream packages may use a different
+`COALESCE(...)` expression under the same deterministic name for a given table.
+Upgrading must replace or rebuild that GIN index with the new expression;
+`CREATE INDEX IF NOT EXISTS` keeps the old index. Concurrent replacement of live
+tables belongs outside transactions and is not performed by `setup()`.
+
 pgvector Documentation
 ----------------------
 

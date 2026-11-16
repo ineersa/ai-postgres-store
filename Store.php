@@ -34,6 +34,9 @@ use Symfony\AI\Store\StoreInterface;
  */
 final class Store implements ManagedStoreInterface, StoreInterface
 {
+    private const IDENTIFIER_BYTE_LIMIT = 63;
+    private const TEXT_GIN_INDEX_SUFFIX = '_text_gin';
+
     public function __construct(
         private readonly \PDO $connection,
         private readonly string $tableName,
@@ -91,8 +94,8 @@ final class Store implements ManagedStoreInterface, StoreInterface
         );
         $this->connection->exec(
             \sprintf(
-                'CREATE INDEX IF NOT EXISTS "%s_text_gin" ON "%s" USING GIN (to_tsvector(\'%s\', metadata->>\'_text\'))',
-                $this->tableName,
+                'CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'%s\', metadata->>\'_text\'))',
+                $this->getTextGinIndexName(),
                 $this->tableName,
                 $this->lang,
             ),
@@ -395,6 +398,18 @@ final class Store implements ManagedStoreInterface, StoreInterface
             Distance::L1 => 'l1',
             Distance::L2 => 'l2',
         });
+    }
+
+    private function getTextGinIndexName(): string
+    {
+        $plainName = $this->tableName.self::TEXT_GIN_INDEX_SUFFIX;
+        if (\strlen($plainName) <= self::IDENTIFIER_BYTE_LIMIT) {
+            return $plainName;
+        }
+
+        $hashBudget = self::IDENTIFIER_BYTE_LIMIT - \strlen(self::TEXT_GIN_INDEX_SUFFIX);
+
+        return substr(hash('sha256', $this->tableName), 0, $hashBudget).self::TEXT_GIN_INDEX_SUFFIX;
     }
 
     private function toPgvector(VectorInterface $vector): string

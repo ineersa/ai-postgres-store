@@ -522,6 +522,48 @@ final class StoreTest extends TestCase
         $this->assertNotSame($statements[2], $statements[3]);
     }
 
+    public function testSetupUsesBoundedDeterministicTextGinNamesForLongTables()
+    {
+        $pdo = $this->createMock(\PDO::class);
+
+        $statements = [];
+        $pdo->expects($this->exactly(16))
+            ->method('exec')
+            ->willReturnCallback(static function (string $sql) use (&$statements): int {
+                $statements[] = $sql;
+
+                return 0;
+            });
+
+        $longTextFieldTable = str_repeat('t', 57);
+        $longEmbeddingTable = str_repeat('t', 62);
+        $sharedPrefixA = str_repeat('x', 54).'_a';
+        $sharedPrefixB = str_repeat('x', 54).'_b';
+
+        (new Store($pdo, $longTextFieldTable, 'text'))->setup();
+        (new Store($pdo, $longEmbeddingTable))->setup();
+        (new Store($pdo, $sharedPrefixA))->setup();
+        (new Store($pdo, $sharedPrefixB))->setup();
+
+        $expectedLongTextFieldName = '952e779718aeb11d9a3bb824fdd6595beab966b6bfbfa7f22f3e39_text_gin';
+        $expectedLongEmbeddingName = 'be046e3775322507f64194844a1af02c8218909daa38ab8279f581_text_gin';
+        $expectedSharedPrefixAName = '392eb1066645cb7b4052b24a59eceda5bba7576837778a84fc67c8_text_gin';
+        $expectedSharedPrefixBName = 'a13ca8d36b085c46b328c6b504745884bab936633c38a86ee517f1_text_gin';
+
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedLongTextFieldName, $longTextFieldTable), $statements[3]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedLongEmbeddingName, $longEmbeddingTable), $statements[7]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedSharedPrefixAName, $sharedPrefixA), $statements[11]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedSharedPrefixBName, $sharedPrefixB), $statements[15]);
+
+        $this->assertSame(63, \strlen($expectedLongTextFieldName));
+        $this->assertSame(63, \strlen($expectedLongEmbeddingName));
+        $this->assertSame(63, \strlen($expectedSharedPrefixAName));
+        $this->assertSame(63, \strlen($expectedSharedPrefixBName));
+        $this->assertNotSame($expectedSharedPrefixAName, $expectedSharedPrefixBName);
+        $this->assertStringNotContainsString($longTextFieldTable.'_text_idx', $statements[3]);
+        $this->assertStringNotContainsString($longEmbeddingTable.'_embedding_idx', $statements[7]);
+    }
+
     public function testSetupRejectsUnsupportedVectorType()
     {
         $pdo = $this->createMock(\PDO::class);
