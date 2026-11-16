@@ -38,41 +38,61 @@ final class Store implements ManagedStoreInterface, StoreInterface
     private const SEARCH_TSV_COLUMN = 'search_tsv';
     private const TEXT_GIN_INDEX_SUFFIX = '_search_tsv_gin';
 
+    private ?\PDO $connection = null;
+    private string $dsn;
+
+    /**
+     * @param \PDO|string $connection A PDO instance, or a DSN to connect with on the first query
+     * @param array{
+     *     db_username?: string,
+     *     db_password?: string,
+     *     db_connection_options?: array<int, mixed>,
+     * } $connectionOptions Used only when $connection is a DSN
+     */
     public function __construct(
-        private readonly \PDO $connection,
+        #[\SensitiveParameter] \PDO|string $connection,
         private readonly string $tableName,
         private readonly string $vectorFieldName = 'embedding',
-        private readonly Distance $distance = Distance::L2,
+        private readonly Metric $metric = Metric::L2,
         private readonly string $lang = 'english',
+        private readonly int $dimensions = 1536,
+        private readonly string $vectorType = 'vector',
+        // Unlike ivfflat, hnsw needs no data to build a good index, and supports every distance
+        private readonly string $indexMethod = 'hnsw',
+        private readonly ?string $indexOpclass = null,
+        #[\SensitiveParameter] private readonly array $connectionOptions = [],
     ) {
         if (self::SEARCH_TSV_COLUMN === $this->vectorFieldName) {
             throw new InvalidArgumentException(\sprintf('The vector field name cannot be "%s" because that column stores the generated full-text representation.', self::SEARCH_TSV_COLUMN));
         }
+
+        if ($connection instanceof \PDO) {
+            if ([] !== $connectionOptions) {
+                throw new InvalidArgumentException('The connection options can only be used with a DSN, not with a PDO instance.');
+            }
+
+            $this->connection = $connection;
+        } else {
+            $this->dsn = $connection;
+        }
     }
 
-    /**
-     * @param array{vector_type?: string, vector_size?: positive-int, index_method?: string, index_opclass?: string} $options
-     *
-     * Good configuration $options are:
-     * - For Mistral: ['vector_size' => 1024]
-     * - For Gemini: ['vector_type' => 'halfvec', 'vector_size' => 3072]
-     */
     public function setup(array $options = []): void
     {
-        $vectorType = $options['vector_type'] ?? 'vector';
-        // Unlike ivfflat, hnsw needs no data to build a good index, and supports every distance
-        $indexMethod = $options['index_method'] ?? 'hnsw';
-
-        // Documents are written and read in the "[x,y,z]" format, which other pgvector types reject
-        if (!\in_array($vectorType, ['halfvec', 'vector'], true)) {
-            throw new InvalidArgumentException(\sprintf('The "%s" vector type is not supported, use "vector" or "halfvec".', $vectorType));
+        if ([] !== $options) {
+            throw new InvalidArgumentException('No supported options.');
         }
 
-        $indexOpclass = $options['index_opclass'] ?? $this->getIndexOpclass($vectorType, $indexMethod);
+        // Documents are written and read in the "[x,y,z]" format, which other pgvector types reject
+        if (!\in_array($this->vectorType, ['halfvec', 'vector'], true)) {
+            throw new InvalidArgumentException(\sprintf('The "%s" vector type is not supported, use "vector" or "halfvec".', $this->vectorType));
+        }
 
-        $this->connection->exec('CREATE EXTENSION IF NOT EXISTS vector');
+        $indexOpclass = $this->indexOpclass ?? $this->getIndexOpclass($this->vectorType, $this->indexMethod);
 
-        $this->connection->exec(
+        $this->getConnection()->exec('CREATE EXTENSION IF NOT EXISTS vector');
+
+        $this->getConnection()->exec(
             \sprintf(
                 'CREATE TABLE IF NOT EXISTS "%s" (
                     id UUID PRIMARY KEY,
@@ -82,15 +102,15 @@ final class Store implements ManagedStoreInterface, StoreInterface
                 )',
                 $this->tableName,
                 $this->vectorFieldName,
-                $vectorType,
-                $options['vector_size'] ?? 1536,
+                $this->vectorType,
+                $this->dimensions,
                 self::SEARCH_TSV_COLUMN,
                 $this->getTsvectorGenerationExpression(),
             ),
         );
         // Existing tables created before this change need the generated column added.
         // IF NOT EXISTS keeps an existing column of the same name unchanged, including its language.
-        $this->connection->exec(
+        $this->getConnection()->exec(
             \sprintf(
                 'ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS "%s" tsvector GENERATED ALWAYS AS (%s) STORED',
                 $this->tableName,
@@ -98,18 +118,18 @@ final class Store implements ManagedStoreInterface, StoreInterface
                 $this->getTsvectorGenerationExpression(),
             ),
         );
-        $this->connection->exec(
+        $this->getConnection()->exec(
             \sprintf(
                 'CREATE INDEX IF NOT EXISTS "%s_%s_idx" ON "%s" USING %s ("%s" %s)',
                 $this->tableName,
                 $this->vectorFieldName,
                 $this->tableName,
-                $indexMethod,
+                $this->indexMethod,
                 $this->vectorFieldName,
                 $indexOpclass,
             ),
         );
-        $this->connection->exec(
+        $this->getConnection()->exec(
             \sprintf(
                 'CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (%s)',
                 $this->getTextGinIndexName(),
@@ -121,12 +141,12 @@ final class Store implements ManagedStoreInterface, StoreInterface
 
     public function drop(array $options = []): void
     {
-        $this->connection->exec(\sprintf('DROP TABLE IF EXISTS "%s"', $this->tableName));
+        $this->getConnection()->exec(\sprintf('DROP TABLE IF EXISTS "%s"', $this->tableName));
     }
 
     public function count(): int
     {
-        $statement = $this->connection->prepare(\sprintf('SELECT COUNT(*) FROM "%s"', $this->tableName));
+        $statement = $this->getConnection()->prepare(\sprintf('SELECT COUNT(*) FROM "%s"', $this->tableName));
         $statement->execute();
 
         return max(0, (int) $statement->fetchColumn());
@@ -138,7 +158,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
             $documents = [$documents];
         }
 
-        $statement = $this->connection->prepare(
+        $statement = $this->getConnection()->prepare(
             \sprintf(
                 'INSERT INTO "%1$s" (id, metadata, "%2$s")
                 VALUES (:id, :metadata, :vector)
@@ -170,7 +190,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
         $placeholders = implode(',', array_fill(0, \count($ids), '?'));
         $sql = \sprintf('DELETE FROM "%s" WHERE id IN (%s)', $this->tableName, $placeholders);
 
-        $statement = $this->connection->prepare($sql);
+        $statement = $this->getConnection()->prepare($sql);
 
         foreach ($ids as $index => $id) {
             $statement->bindValue($index + 1, $id);
@@ -181,7 +201,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
 
     public function clear(array $options = []): void
     {
-        $this->connection->exec(\sprintf('TRUNCATE TABLE "%s"', $this->tableName));
+        $this->getConnection()->exec(\sprintf('TRUNCATE TABLE "%s"', $this->tableName));
     }
 
     public function supports(string $queryClass): bool
@@ -194,7 +214,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
     }
 
     /**
-     * @param array{limit?: positive-int, maxScore?: float, where?: string, params?: array<string, mixed>} $options
+     * @param array{limit?: positive-int, maxScore?: float} $options
      */
     public function query(QueryInterface $query, array $options = []): iterable
     {
@@ -217,7 +237,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
         $params = ['embedding' => $this->toPgvector($query->getVector())];
 
         if (isset($options['maxScore'])) {
-            $whereClauses[] = \sprintf('("%s" %s :embedding) <= :maxScore', $this->vectorFieldName, $this->distance->getComparisonSign());
+            $whereClauses[] = \sprintf('("%s" %s :embedding) <= :maxScore', $this->vectorFieldName, $this->metric->getComparisonSign());
             $params['maxScore'] = $options['maxScore'];
         }
 
@@ -241,13 +261,13 @@ final class Store implements ManagedStoreInterface, StoreInterface
             SQL,
             $this->vectorFieldName,
             $this->vectorFieldName,
-            $this->distance->getComparisonSign(),
+            $this->metric->getComparisonSign(),
             $this->tableName,
             $where,
             $options['limit'] ?? 5,
         );
 
-        $statement = $this->connection->prepare($sql);
+        $statement = $this->getConnection()->prepare($sql);
 
         foreach ($params as $key => $value) {
             $statement->bindValue(':'.$key, $value);
@@ -303,7 +323,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
             $options['limit'] ?? 5,
         );
 
-        $statement = $this->connection->prepare($sql);
+        $statement = $this->getConnection()->prepare($sql);
         foreach ($params as $paramName => $value) {
             $statement->bindValue(':'.$paramName, $value);
         }
@@ -345,12 +365,13 @@ final class Store implements ManagedStoreInterface, StoreInterface
         $tsqueryExpression = '('.implode(' || ', $tsqueryParts).')'; // OR operator in PostgreSQL
         $tsvectorExpression = $this->getTsvectorColumnReference();
 
-        $where = \sprintf('WHERE %s @@ %s', $tsvectorExpression, $tsqueryExpression);
+        // Documents sharing no keyword still rank by their vector distance, unless the query is keywords only
+        $whereClauses = 0.0 === $query->getSemanticRatio() ? [\sprintf('%s @@ %s', $tsvectorExpression, $tsqueryExpression)] : [];
 
         if (isset($options['maxScore'])) {
-            $where .= \sprintf(' AND ((:semantic_ratio * (1 - ("%s" %s :embedding))) + (:keyword_ratio * ts_rank(%s, %s))) >= :maxScore',
+            $whereClauses[] = \sprintf('((:semantic_ratio * (1 - ("%s" %s :embedding))) + (:keyword_ratio * ts_rank(%s, %s))) >= :maxScore',
                 $this->vectorFieldName,
-                $this->distance->getComparisonSign(),
+                $this->metric->getComparisonSign(),
                 $tsvectorExpression,
                 $tsqueryExpression
             );
@@ -359,12 +380,14 @@ final class Store implements ManagedStoreInterface, StoreInterface
 
         if (isset($options['where'])) {
             // Only wrap in parentheses if combining with other conditions
-            $where .= ' AND ('.$options['where'].')';
+            $whereClauses[] = [] !== $whereClauses ? '('.$options['where'].')' : $options['where'];
         }
 
         if (isset($options['params'])) {
             $params = array_merge($params, $options['params']);
         }
+
+        $where = [] !== $whereClauses ? 'WHERE '.implode(' AND ', $whereClauses) : '';
 
         $sql = \sprintf(<<<SQL
             SELECT id, "%s" AS embedding, metadata,
@@ -377,7 +400,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
             SQL,
             $this->vectorFieldName,
             $this->vectorFieldName,
-            $this->distance->getComparisonSign(),
+            $this->metric->getComparisonSign(),
             $tsvectorExpression,
             $tsqueryExpression,
             $this->tableName,
@@ -385,7 +408,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
             $options['limit'] ?? 5,
         );
 
-        $statement = $this->connection->prepare($sql);
+        $statement = $this->getConnection()->prepare($sql);
 
         foreach ($params as $key => $value) {
             $statement->bindValue(':'.$key, $value);
@@ -405,21 +428,21 @@ final class Store implements ManagedStoreInterface, StoreInterface
 
     private function getIndexOpclass(string $vectorType, string $indexMethod): string
     {
-        if ('ivfflat' === $indexMethod && Distance::L1 === $this->distance) {
+        if ('ivfflat' === $indexMethod && Metric::L1 === $this->metric) {
             throw new InvalidArgumentException('The "ivfflat" index method does not support the L1 distance, use "hnsw".');
         }
 
-        return \sprintf('%s_%s_ops', $vectorType, match ($this->distance) {
-            Distance::Cosine => 'cosine',
-            Distance::InnerProduct => 'ip',
-            Distance::L1 => 'l1',
-            Distance::L2 => 'l2',
+        return \sprintf('%s_%s_ops', $vectorType, match ($this->metric) {
+            Metric::Cosine => 'cosine',
+            Metric::InnerProduct => 'ip',
+            Metric::L1 => 'l1',
+            Metric::L2 => 'l2',
         });
     }
 
     private function getTsvectorGenerationExpression(): string
     {
-        return \sprintf("to_tsvector('%s', metadata->>'_text')", $this->lang);
+        return \sprintf("to_tsvector('%s', COALESCE(metadata->>'_text', ''))", $this->lang);
     }
 
     private function getTsvectorColumnReference(): string
@@ -450,5 +473,21 @@ final class Store implements ManagedStoreInterface, StoreInterface
     private function fromPgvector(string $vector): array
     {
         return json_decode($vector, true, 512, \JSON_THROW_ON_ERROR);
+    }
+
+    private function getConnection(): \PDO
+    {
+        if (null === $this->connection) {
+            $this->connection = new \PDO(
+                $this->dsn,
+                $this->connectionOptions['db_username'] ?? null,
+                $this->connectionOptions['db_password'] ?? null,
+                $this->connectionOptions['db_connection_options'] ?? [],
+            );
+            // the queries rely on PDO throwing on errors
+            $this->connection->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        }
+
+        return $this->connection;
     }
 }

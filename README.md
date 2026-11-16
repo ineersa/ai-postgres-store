@@ -6,27 +6,31 @@ Provides [PostgreSQL with pgvector](https://github.com/pgvector/pgvector) vector
 `Store::setup()` creates the table with a stored generated `search_tsv` column:
 
 ```sql
-to_tsvector('<lang>', metadata->>'_text')
+to_tsvector('<lang>', COALESCE(metadata->>'_text', ''))
 ```
 
 It also creates the vector index and a GIN index on `"search_tsv"`. `TextQuery`
-and hybrid queries use that column. This pinned fork keeps the mandatory lexical
-`@@` gate and exact `where`/`params` HybridQuery behavior from `0.15.0.1`.
+and keyword-only hybrid filtering (`semanticRatio = 0.0`) use that column.
+Default mixed hybrid ranking still scores the whole candidate set; the stored
+column avoids rebuilding the text vector on every search, while the GIN index
+accelerates lexical matching.
+
+HybridQuery accepts the same optional `where`/`params` filters as vector queries. They are AND-combined with any keyword-only lexical predicate and `maxScore`, and do not restore a mandatory lexical gate for mixed ranking.
 
 Writes keep inserting only `id`, `metadata`, and the vector field. PostgreSQL
 computes `search_tsv` automatically. The vector field name cannot be
 `search_tsv`.
 
-Existing stores must run `setup()` or an equivalent schema upgrade before text
-or hybrid queries against this version. Tables without `search_tsv` fail at
-query time.
+Existing stores must run `setup()` or an equivalent schema upgrade before
+text or hybrid queries against this version. Queries now read `"search_tsv"`;
+tables without that column fail at query time.
 
 Existing tables created before this change get the column through:
 
 ```sql
 ALTER TABLE "<table>"
 ADD COLUMN IF NOT EXISTS "search_tsv" tsvector
-GENERATED ALWAYS AS (to_tsvector('<lang>', metadata->>'_text')) STORED;
+GENERATED ALWAYS AS (to_tsvector('<lang>', COALESCE(metadata->>'_text', ''))) STORED;
 ```
 
 That backfills existing rows and takes an `ACCESS EXCLUSIVE` lock. Concurrent

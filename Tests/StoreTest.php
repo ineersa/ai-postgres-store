@@ -15,7 +15,7 @@ use Doctrine\DBAL\Connection;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Symfony\AI\Platform\Vector\Vector;
-use Symfony\AI\Store\Bridge\Postgres\Distance;
+use Symfony\AI\Store\Bridge\Postgres\Metric;
 use Symfony\AI\Store\Bridge\Postgres\Store;
 use Symfony\AI\Store\Bridge\Postgres\StoreFactory;
 use Symfony\AI\Store\Document\Metadata;
@@ -173,7 +173,7 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
         $statement = $this->createMock(\PDOStatement::class);
 
-        $store = new Store($pdo, 'embeddings_table', 'embedding', Distance::Cosine);
+        $store = new Store($pdo, 'embeddings_table', 'embedding', Metric::Cosine);
 
         $expectedQuery = 'SELECT id, "embedding" AS embedding, metadata, ("embedding" <=> :embedding) AS score
              FROM "embeddings_table"
@@ -275,7 +275,7 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
         $statement = $this->createMock(\PDOStatement::class);
 
-        $store = new Store($pdo, 'embeddings_table', 'embedding', Distance::Cosine);
+        $store = new Store($pdo, 'embeddings_table', 'embedding', Metric::Cosine);
 
         $expectedQuery = 'SELECT id, "embedding" AS embedding, metadata, ("embedding" <=> :embedding) AS score
              FROM "embeddings_table"
@@ -411,9 +411,9 @@ final class StoreTest extends TestCase
                 } elseif (2 === $callCount) {
                     $this->assertStringContainsString('CREATE TABLE IF NOT EXISTS "embeddings_table"', $sql);
                     $this->assertStringContainsString('"embedding" vector(1536) NOT NULL', $sql);
-                    $this->assertStringContainsString('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'english\', metadata->>\'_text\')) STORED', $sql);
+                    $this->assertStringContainsString('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'english\', COALESCE(metadata->>\'_text\', \'\'))) STORED', $sql);
                 } elseif (3 === $callCount) {
-                    $this->assertSame('ALTER TABLE "embeddings_table" ADD COLUMN IF NOT EXISTS "search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'english\', metadata->>\'_text\')) STORED', $sql);
+                    $this->assertSame('ALTER TABLE "embeddings_table" ADD COLUMN IF NOT EXISTS "search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'english\', COALESCE(metadata->>\'_text\', \'\'))) STORED', $sql);
                 } elseif (4 === $callCount) {
                     $this->assertStringContainsString('CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx"', $sql);
                 } else {
@@ -443,11 +443,11 @@ final class StoreTest extends TestCase
         $store->drop();
     }
 
-    public function testInitializeWithCustomVectorSize()
+    public function testInitializeWithCustomDimensions()
     {
         $pdo = $this->createMock(\PDO::class);
 
-        $store = new Store($pdo, 'embeddings_table', 'embedding');
+        $store = new Store($pdo, 'embeddings_table', 'embedding', dimensions: 768);
 
         $pdo->expects($this->exactly(5))
             ->method('exec')
@@ -463,14 +463,14 @@ final class StoreTest extends TestCase
                 return 0;
             });
 
-        $store->setup(['vector_size' => 768]);
+        $store->setup();
     }
 
     /**
-     * @param array{vector_type?: string, index_method?: string, index_opclass?: string} $options
+     * @param array{vectorType?: string, indexMethod?: string, indexOpclass?: string} $arguments
      */
     #[DataProvider('provideIndexes')]
-    public function testSetupCreatesIndexMatchingTheDistance(Distance $distance, array $options, string $expectedIndex)
+    public function testSetupCreatesIndexMatchingTheMetric(Metric $metric, array $arguments, string $expectedIndex)
     {
         $pdo = $this->createMock(\PDO::class);
 
@@ -483,25 +483,25 @@ final class StoreTest extends TestCase
                 return 0;
             });
 
-        $store = new Store($pdo, 'embeddings_table', 'embedding', $distance);
-        $store->setup($options);
+        $store = new Store($pdo, 'embeddings_table', 'embedding', $metric, ...$arguments);
+        $store->setup();
 
         $this->assertSame($expectedIndex, $statements[3]);
         $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_search_tsv_gin" ON "embeddings_table" USING GIN ("search_tsv")', $statements[4]);
     }
 
     /**
-     * @return iterable<string, array{Distance, array<string, string>, string}>
+     * @return iterable<string, array{Metric, array{vectorType?: string, indexMethod?: string, indexOpclass?: string}, string}>
      */
     public static function provideIndexes(): iterable
     {
-        yield 'cosine' => [Distance::Cosine, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_cosine_ops)'];
-        yield 'inner product' => [Distance::InnerProduct, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_ip_ops)'];
-        yield 'l1' => [Distance::L1, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_l1_ops)'];
-        yield 'l2' => [Distance::L2, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_l2_ops)'];
-        yield 'halfvec' => [Distance::Cosine, ['vector_type' => 'halfvec'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" halfvec_cosine_ops)'];
-        yield 'ivfflat' => [Distance::InnerProduct, ['index_method' => 'ivfflat'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING ivfflat ("embedding" vector_ip_ops)'];
-        yield 'explicit index' => [Distance::L2, ['index_method' => 'ivfflat', 'index_opclass' => 'vector_cosine_ops'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING ivfflat ("embedding" vector_cosine_ops)'];
+        yield 'cosine' => [Metric::Cosine, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_cosine_ops)'];
+        yield 'inner product' => [Metric::InnerProduct, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_ip_ops)'];
+        yield 'l1' => [Metric::L1, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_l1_ops)'];
+        yield 'l2' => [Metric::L2, [], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" vector_l2_ops)'];
+        yield 'halfvec' => [Metric::Cosine, ['vectorType' => 'halfvec'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING hnsw ("embedding" halfvec_cosine_ops)'];
+        yield 'ivfflat' => [Metric::InnerProduct, ['indexMethod' => 'ivfflat'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING ivfflat ("embedding" vector_ip_ops)'];
+        yield 'explicit index' => [Metric::L2, ['indexMethod' => 'ivfflat', 'indexOpclass' => 'vector_cosine_ops'], 'CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx" ON "embeddings_table" USING ivfflat ("embedding" vector_cosine_ops)'];
     }
 
     public function testSetupCreatesTextIndexMatchingConfiguredLanguage()
@@ -520,8 +520,8 @@ final class StoreTest extends TestCase
         $store = new Store($pdo, 'embeddings_table', 'text', lang: 'simple');
         $store->setup();
 
-        $this->assertStringContainsString('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'simple\', metadata->>\'_text\')) STORED', $statements[1]);
-        $this->assertSame('ALTER TABLE "embeddings_table" ADD COLUMN IF NOT EXISTS "search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'simple\', metadata->>\'_text\')) STORED', $statements[2]);
+        $this->assertStringContainsString('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'simple\', COALESCE(metadata->>\'_text\', \'\'))) STORED', $statements[1]);
+        $this->assertSame('ALTER TABLE "embeddings_table" ADD COLUMN IF NOT EXISTS "search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'simple\', COALESCE(metadata->>\'_text\', \'\'))) STORED', $statements[2]);
         $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_idx" ON "embeddings_table" USING hnsw ("text" vector_l2_ops)', $statements[3]);
         $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_search_tsv_gin" ON "embeddings_table" USING GIN ("search_tsv")', $statements[4]);
         $this->assertNotSame($statements[3], $statements[4]);
@@ -575,12 +575,12 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
         $pdo->expects($this->never())->method('exec');
 
-        $store = new Store($pdo, 'embeddings_table');
+        $store = new Store($pdo, 'embeddings_table', vectorType: 'bit');
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('The "bit" vector type is not supported, use "vector" or "halfvec".');
 
-        $store->setup(['vector_type' => 'bit']);
+        $store->setup();
     }
 
     public function testConstructorRejectsSearchTsvVectorFieldName()
@@ -636,12 +636,25 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
         $pdo->expects($this->never())->method('exec');
 
-        $store = new Store($pdo, 'embeddings_table', 'embedding', Distance::L1);
+        $store = new Store($pdo, 'embeddings_table', 'embedding', Metric::L1, indexMethod: 'ivfflat');
 
         $this->expectException(InvalidArgumentException::class);
         $this->expectExceptionMessage('The "ivfflat" index method does not support the L1 distance, use "hnsw".');
 
-        $store->setup(['index_method' => 'ivfflat']);
+        $store->setup();
+    }
+
+    public function testSetupRejectsOptions()
+    {
+        $pdo = $this->createMock(\PDO::class);
+        $pdo->expects($this->never())->method('exec');
+
+        $store = new Store($pdo, 'embeddings_table');
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('No supported options.');
+
+        $store->setup(['vector_size' => 768]);
     }
 
     public function testFromPdo()
@@ -1017,7 +1030,6 @@ final class StoreTest extends TestCase
                    ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
                     (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
             FROM \"embeddings_table\"
-            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0))
             ORDER BY score DESC
             LIMIT 5";
 
@@ -1046,6 +1058,46 @@ final class StoreTest extends TestCase
         $this->assertCount(0, $results);
     }
 
+    public function testQueryWithKeywordOnlyHybridQueryKeepsMatchingDocumentsOnly()
+    {
+        $pdo = $this->createMock(\PDO::class);
+        $statement = $this->createMock(\PDOStatement::class);
+
+        $store = new Store($pdo, 'embeddings_table', 'embedding');
+
+        $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
+                   ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
+                    (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
+            FROM \"embeddings_table\"
+            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0))
+            ORDER BY score DESC
+            LIMIT 5";
+
+        $pdo->expects($this->once())
+            ->method('prepare')
+            ->with($this->callback(function ($sql) use ($expectedQuery) {
+                $this->assertSame($this->normalizeQuery($expectedQuery), $this->normalizeQuery($sql));
+
+                return true;
+            }))
+            ->willReturn($statement);
+
+        $statement->expects($this->exactly(4))
+            ->method('bindValue');
+
+        $statement->expects($this->once())
+            ->method('execute');
+
+        $statement->expects($this->once())
+            ->method('fetchAll')
+            ->with(\PDO::FETCH_ASSOC)
+            ->willReturn([]);
+
+        $results = iterator_to_array($store->query(new HybridQuery(new Vector([0.1, 0.2, 0.3]), 'test query', 0.0)));
+
+        $this->assertCount(0, $results);
+    }
+
     public function testQueryWithHybridQueryWhereAndParams()
     {
         $pdo = $this->createMock(\PDO::class);
@@ -1057,7 +1109,7 @@ final class StoreTest extends TestCase
                    ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
                     (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
             FROM \"embeddings_table\"
-            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0)) AND ((metadata->>'occurred_at')::bigint >= :after_ts AND (metadata->>'occurred_at')::bigint < :before_ts)
+            WHERE (metadata->>'occurred_at')::bigint >= :after_ts AND (metadata->>'occurred_at')::bigint < :before_ts
             ORDER BY score DESC
             LIMIT 5";
 
@@ -1071,7 +1123,20 @@ final class StoreTest extends TestCase
             ->willReturn($statement);
 
         $statement->expects($this->exactly(6))
-            ->method('bindValue');
+            ->method('bindValue')
+            ->willReturnCallback(function (string $parameter, mixed $value) {
+                match ($parameter) {
+                    ':embedding' => $this->assertSame('[0.1,0.2,0.3]', $value),
+                    ':semantic_ratio' => $this->assertSame(0.7, $value),
+                    ':keyword_ratio' => $this->assertEqualsWithDelta(0.3, $value, 0.0000001),
+                    ':search_text_0' => $this->assertSame('test query', $value),
+                    ':after_ts' => $this->assertSame(1, $value),
+                    ':before_ts' => $this->assertSame(2, $value),
+                    default => $this->fail(\sprintf('Unexpected parameter "%s".', $parameter)),
+                };
+
+                return true;
+            });
 
         $statement->expects($this->once())
             ->method('execute');
@@ -1134,6 +1199,24 @@ final class StoreTest extends TestCase
             ->willReturn('42');
 
         $this->assertSame(42, $store->count());
+    }
+
+    public function testConnectsToTheDsnOnTheFirstQuery()
+    {
+        $store = new Store('missing-driver:dbname=test', 'embeddings_table');
+
+        $this->expectException(\PDOException::class);
+        $this->expectExceptionMessage('could not find driver');
+
+        $store->count();
+    }
+
+    public function testRejectsConnectionOptionsWithAPdoInstance()
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The connection options can only be used with a DSN, not with a PDO instance.');
+
+        new Store(new \PDO('sqlite::memory:'), 'embeddings_table', 'embedding', Metric::L2, 'english', 1536, 'vector', 'hnsw', null, ['db_username' => 'postgres']);
     }
 
     private function normalizeQuery(string $query): string
