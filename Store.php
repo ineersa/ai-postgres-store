@@ -35,7 +35,8 @@ use Symfony\AI\Store\StoreInterface;
 final class Store implements ManagedStoreInterface, StoreInterface
 {
     private const IDENTIFIER_BYTE_LIMIT = 63;
-    private const TEXT_GIN_INDEX_SUFFIX = '_text_gin';
+    private const SEARCH_TSV_COLUMN = 'search_tsv';
+    private const TEXT_GIN_INDEX_SUFFIX = '_search_tsv_gin';
 
     public function __construct(
         private readonly \PDO $connection,
@@ -44,6 +45,9 @@ final class Store implements ManagedStoreInterface, StoreInterface
         private readonly Distance $distance = Distance::L2,
         private readonly string $lang = 'english',
     ) {
+        if (self::SEARCH_TSV_COLUMN === $this->vectorFieldName) {
+            throw new InvalidArgumentException(\sprintf('The vector field name cannot be "%s" because that column stores the generated full-text representation.', self::SEARCH_TSV_COLUMN));
+        }
     }
 
     /**
@@ -73,12 +77,25 @@ final class Store implements ManagedStoreInterface, StoreInterface
                 'CREATE TABLE IF NOT EXISTS "%s" (
                     id UUID PRIMARY KEY,
                     metadata JSONB,
-                    "%s" %s(%d) NOT NULL
+                    "%s" %s(%d) NOT NULL,
+                    "%s" tsvector GENERATED ALWAYS AS (%s) STORED
                 )',
                 $this->tableName,
                 $this->vectorFieldName,
                 $vectorType,
                 $options['vector_size'] ?? 1536,
+                self::SEARCH_TSV_COLUMN,
+                $this->getTsvectorGenerationExpression(),
+            ),
+        );
+        // Existing tables created before this change need the generated column added.
+        // IF NOT EXISTS keeps an existing column of the same name unchanged, including its language.
+        $this->connection->exec(
+            \sprintf(
+                'ALTER TABLE "%s" ADD COLUMN IF NOT EXISTS "%s" tsvector GENERATED ALWAYS AS (%s) STORED',
+                $this->tableName,
+                self::SEARCH_TSV_COLUMN,
+                $this->getTsvectorGenerationExpression(),
             ),
         );
         $this->connection->exec(
@@ -94,10 +111,10 @@ final class Store implements ManagedStoreInterface, StoreInterface
         );
         $this->connection->exec(
             \sprintf(
-                'CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'%s\', metadata->>\'_text\'))',
+                'CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (%s)',
                 $this->getTextGinIndexName(),
                 $this->tableName,
-                $this->lang,
+                $this->getTsvectorColumnReference(),
             ),
         );
     }
@@ -267,7 +284,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
         }
 
         $tsqueryExpression = implode(' || ', $tsqueryParts); // OR operator in PostgreSQL
-        $tsvectorExpression = \sprintf("to_tsvector('%s', metadata->>'_text')", $this->lang);
+        $tsvectorExpression = $this->getTsvectorColumnReference();
 
         $sql = \sprintf(<<<SQL
             SELECT id, "%s" AS embedding, metadata,
@@ -326,7 +343,7 @@ final class Store implements ManagedStoreInterface, StoreInterface
         }
 
         $tsqueryExpression = '('.implode(' || ', $tsqueryParts).')'; // OR operator in PostgreSQL
-        $tsvectorExpression = \sprintf("to_tsvector('%s', metadata->>'_text')", $this->lang);
+        $tsvectorExpression = $this->getTsvectorColumnReference();
 
         $where = \sprintf('WHERE %s @@ %s', $tsvectorExpression, $tsqueryExpression);
 
@@ -398,6 +415,16 @@ final class Store implements ManagedStoreInterface, StoreInterface
             Distance::L1 => 'l1',
             Distance::L2 => 'l2',
         });
+    }
+
+    private function getTsvectorGenerationExpression(): string
+    {
+        return \sprintf("to_tsvector('%s', metadata->>'_text')", $this->lang);
+    }
+
+    private function getTsvectorColumnReference(): string
+    {
+        return \sprintf('"%s"', self::SEARCH_TSV_COLUMN);
     }
 
     private function getTextGinIndexName(): string

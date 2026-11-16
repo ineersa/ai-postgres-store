@@ -399,7 +399,7 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $pdo->expects($this->exactly(4))
+        $pdo->expects($this->exactly(5))
             ->method('exec')
             ->willReturnCallback(function (string $sql): int {
                 /** @var int $callCount */
@@ -411,10 +411,13 @@ final class StoreTest extends TestCase
                 } elseif (2 === $callCount) {
                     $this->assertStringContainsString('CREATE TABLE IF NOT EXISTS "embeddings_table"', $sql);
                     $this->assertStringContainsString('"embedding" vector(1536) NOT NULL', $sql);
+                    $this->assertStringContainsString('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'english\', metadata->>\'_text\')) STORED', $sql);
                 } elseif (3 === $callCount) {
+                    $this->assertSame('ALTER TABLE "embeddings_table" ADD COLUMN IF NOT EXISTS "search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'english\', metadata->>\'_text\')) STORED', $sql);
+                } elseif (4 === $callCount) {
                     $this->assertStringContainsString('CREATE INDEX IF NOT EXISTS "embeddings_table_embedding_idx"', $sql);
                 } else {
-                    $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_gin" ON "embeddings_table" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $sql);
+                    $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_search_tsv_gin" ON "embeddings_table" USING GIN ("search_tsv")', $sql);
                 }
 
                 return 0;
@@ -446,7 +449,7 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $pdo->expects($this->exactly(4))
+        $pdo->expects($this->exactly(5))
             ->method('exec')
             ->willReturnCallback(function (string $sql): int {
                 /** @var int $callCount */
@@ -472,7 +475,7 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
 
         $statements = [];
-        $pdo->expects($this->exactly(4))
+        $pdo->expects($this->exactly(5))
             ->method('exec')
             ->willReturnCallback(static function (string $sql) use (&$statements): int {
                 $statements[] = $sql;
@@ -483,8 +486,8 @@ final class StoreTest extends TestCase
         $store = new Store($pdo, 'embeddings_table', 'embedding', $distance);
         $store->setup($options);
 
-        $this->assertSame($expectedIndex, $statements[2]);
-        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_gin" ON "embeddings_table" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $statements[3]);
+        $this->assertSame($expectedIndex, $statements[3]);
+        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_search_tsv_gin" ON "embeddings_table" USING GIN ("search_tsv")', $statements[4]);
     }
 
     /**
@@ -506,7 +509,7 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
 
         $statements = [];
-        $pdo->expects($this->exactly(4))
+        $pdo->expects($this->exactly(5))
             ->method('exec')
             ->willReturnCallback(static function (string $sql) use (&$statements): int {
                 $statements[] = $sql;
@@ -517,9 +520,11 @@ final class StoreTest extends TestCase
         $store = new Store($pdo, 'embeddings_table', 'text', lang: 'simple');
         $store->setup();
 
-        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_idx" ON "embeddings_table" USING hnsw ("text" vector_l2_ops)', $statements[2]);
-        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_gin" ON "embeddings_table" USING GIN (to_tsvector(\'simple\', metadata->>\'_text\'))', $statements[3]);
-        $this->assertNotSame($statements[2], $statements[3]);
+        $this->assertStringContainsString('"search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'simple\', metadata->>\'_text\')) STORED', $statements[1]);
+        $this->assertSame('ALTER TABLE "embeddings_table" ADD COLUMN IF NOT EXISTS "search_tsv" tsvector GENERATED ALWAYS AS (to_tsvector(\'simple\', metadata->>\'_text\')) STORED', $statements[2]);
+        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_text_idx" ON "embeddings_table" USING hnsw ("text" vector_l2_ops)', $statements[3]);
+        $this->assertSame('CREATE INDEX IF NOT EXISTS "embeddings_table_search_tsv_gin" ON "embeddings_table" USING GIN ("search_tsv")', $statements[4]);
+        $this->assertNotSame($statements[3], $statements[4]);
     }
 
     public function testSetupUsesBoundedDeterministicTextGinNamesForLongTables()
@@ -527,7 +532,7 @@ final class StoreTest extends TestCase
         $pdo = $this->createMock(\PDO::class);
 
         $statements = [];
-        $pdo->expects($this->exactly(16))
+        $pdo->expects($this->exactly(20))
             ->method('exec')
             ->willReturnCallback(static function (string $sql) use (&$statements): int {
                 $statements[] = $sql;
@@ -545,23 +550,24 @@ final class StoreTest extends TestCase
         (new Store($pdo, $sharedPrefixA))->setup();
         (new Store($pdo, $sharedPrefixB))->setup();
 
-        $expectedLongTextFieldName = '952e779718aeb11d9a3bb824fdd6595beab966b6bfbfa7f22f3e39_text_gin';
-        $expectedLongEmbeddingName = 'be046e3775322507f64194844a1af02c8218909daa38ab8279f581_text_gin';
-        $expectedSharedPrefixAName = '392eb1066645cb7b4052b24a59eceda5bba7576837778a84fc67c8_text_gin';
-        $expectedSharedPrefixBName = 'a13ca8d36b085c46b328c6b504745884bab936633c38a86ee517f1_text_gin';
+        $expectedLongTextFieldName = '952e779718aeb11d9a3bb824fdd6595beab966b6bfbfa7f2_search_tsv_gin';
+        $expectedLongEmbeddingName = 'be046e3775322507f64194844a1af02c8218909daa38ab82_search_tsv_gin';
+        $expectedSharedPrefixAName = '392eb1066645cb7b4052b24a59eceda5bba7576837778a84_search_tsv_gin';
+        $expectedSharedPrefixBName = 'a13ca8d36b085c46b328c6b504745884bab936633c38a86e_search_tsv_gin';
 
-        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedLongTextFieldName, $longTextFieldTable), $statements[3]);
-        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedLongEmbeddingName, $longEmbeddingTable), $statements[7]);
-        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedSharedPrefixAName, $sharedPrefixA), $statements[11]);
-        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN (to_tsvector(\'english\', metadata->>\'_text\'))', $expectedSharedPrefixBName, $sharedPrefixB), $statements[15]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN ("search_tsv")', $expectedLongTextFieldName, $longTextFieldTable), $statements[4]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN ("search_tsv")', $expectedLongEmbeddingName, $longEmbeddingTable), $statements[9]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN ("search_tsv")', $expectedSharedPrefixAName, $sharedPrefixA), $statements[14]);
+        $this->assertSame(\sprintf('CREATE INDEX IF NOT EXISTS "%s" ON "%s" USING GIN ("search_tsv")', $expectedSharedPrefixBName, $sharedPrefixB), $statements[19]);
 
         $this->assertSame(63, \strlen($expectedLongTextFieldName));
         $this->assertSame(63, \strlen($expectedLongEmbeddingName));
         $this->assertSame(63, \strlen($expectedSharedPrefixAName));
         $this->assertSame(63, \strlen($expectedSharedPrefixBName));
         $this->assertNotSame($expectedSharedPrefixAName, $expectedSharedPrefixBName);
-        $this->assertStringNotContainsString($longTextFieldTable.'_text_idx', $statements[3]);
-        $this->assertStringNotContainsString($longEmbeddingTable.'_embedding_idx', $statements[7]);
+        $this->assertStringNotContainsString($longTextFieldTable.'_text_idx', $statements[4]);
+        $this->assertStringNotContainsString($longEmbeddingTable.'_embedding_idx', $statements[9]);
+        $this->assertStringNotContainsString('_text_gin', $statements[4]);
     }
 
     public function testSetupRejectsUnsupportedVectorType()
@@ -575,6 +581,54 @@ final class StoreTest extends TestCase
         $this->expectExceptionMessage('The "bit" vector type is not supported, use "vector" or "halfvec".');
 
         $store->setup(['vector_type' => 'bit']);
+    }
+
+    public function testConstructorRejectsSearchTsvVectorFieldName()
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The vector field name cannot be "search_tsv" because that column stores the generated full-text representation.');
+
+        new Store($this->createMock(\PDO::class), 'embeddings_table', 'search_tsv');
+    }
+
+    public function testQueryWithTextQueryUsesConfiguredLanguage()
+    {
+        $pdo = $this->createMock(\PDO::class);
+        $statement = $this->createMock(\PDOStatement::class);
+
+        $store = new Store($pdo, 'embeddings_table', 'embedding', lang: 'simple');
+
+        $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
+                   ts_rank(\"search_tsv\", plainto_tsquery('simple', :search_text_0)) AS score
+            FROM \"embeddings_table\"
+            WHERE \"search_tsv\" @@ (plainto_tsquery('simple', :search_text_0))
+            ORDER BY score DESC
+            LIMIT 5";
+
+        $pdo->expects($this->once())
+            ->method('prepare')
+            ->with($this->callback(function ($sql) use ($expectedQuery) {
+                $this->assertSame($this->normalizeQuery($expectedQuery), $this->normalizeQuery($sql));
+
+                return true;
+            }))
+            ->willReturn($statement);
+
+        $statement->expects($this->once())
+            ->method('bindValue')
+            ->with(':search_text_0', 'test query');
+
+        $statement->expects($this->once())
+            ->method('execute');
+
+        $statement->expects($this->once())
+            ->method('fetchAll')
+            ->with(\PDO::FETCH_ASSOC)
+            ->willReturn([]);
+
+        $results = iterator_to_array($store->query(new TextQuery('test query')));
+
+        $this->assertCount(0, $results);
     }
 
     public function testSetupRejectsIvfflatIndexForL1Distance()
@@ -920,9 +974,9 @@ final class StoreTest extends TestCase
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
         $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
-                   ts_rank(to_tsvector('english', metadata->>'_text'), plainto_tsquery('english', :search_text_0)) AS score
+                   ts_rank(\"search_tsv\", plainto_tsquery('english', :search_text_0)) AS score
             FROM \"embeddings_table\"
-            WHERE to_tsvector('english', metadata->>'_text') @@ (plainto_tsquery('english', :search_text_0))
+            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0))
             ORDER BY score DESC
             LIMIT 5";
 
@@ -961,9 +1015,9 @@ final class StoreTest extends TestCase
 
         $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
                    ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
-                    (:keyword_ratio * ts_rank(to_tsvector('english', metadata->>'_text'), (plainto_tsquery('english', :search_text_0))))) AS score
+                    (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
             FROM \"embeddings_table\"
-            WHERE to_tsvector('english', metadata->>'_text') @@ (plainto_tsquery('english', :search_text_0))
+            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0))
             ORDER BY score DESC
             LIMIT 5";
 
@@ -1001,9 +1055,9 @@ final class StoreTest extends TestCase
 
         $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
                    ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
-                    (:keyword_ratio * ts_rank(to_tsvector('english', metadata->>'_text'), (plainto_tsquery('english', :search_text_0))))) AS score
+                    (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
             FROM \"embeddings_table\"
-            WHERE to_tsvector('english', metadata->>'_text') @@ (plainto_tsquery('english', :search_text_0)) AND ((metadata->>'occurred_at')::bigint >= :after_ts AND (metadata->>'occurred_at')::bigint < :before_ts)
+            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0)) AND ((metadata->>'occurred_at')::bigint >= :after_ts AND (metadata->>'occurred_at')::bigint < :before_ts)
             ORDER BY score DESC
             LIMIT 5";
 

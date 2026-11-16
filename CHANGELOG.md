@@ -4,6 +4,7 @@ CHANGELOG
 0.15
 ----
 
+ * [BC BREAK] Store a generated `search_tsv` column for text and hybrid queries, create a matching GIN index on that column, and reserve `search_tsv` as the vector field name; existing stores must upgrade their schema before text or hybrid queries
  * Support `where`/`params` filtering for HybridQuery
 
 0.14

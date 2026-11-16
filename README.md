@@ -3,26 +3,55 @@ PostgreSQL pgvector Store
 
 Provides [PostgreSQL with pgvector](https://github.com/pgvector/pgvector) vector store integration for Symfony AI Store.
 
-`Store::setup()` creates the table, the vector index, and a matching GIN expression
-index on `to_tsvector(<lang>, metadata->>'_text')` for text and hybrid queries that
-use that same expression. Existing tables created before this change need that GIN
-index added separately; calling `setup()` again on a populated table creates it
-without `CONCURRENTLY`.
+`Store::setup()` creates the table with a stored generated `search_tsv` column:
 
-This package names the GIN index `<table>_text_gin` when that fits PostgreSQL's
-63-byte identifier limit, otherwise a deterministic SHA-256 prefix of the full
-table name plus `_text_gin`. Future upstream packages may use a different
-`COALESCE(...)` expression under the same deterministic name for a given table.
-Upgrading must replace or rebuild that GIN index with the new expression;
-`CREATE INDEX IF NOT EXISTS` keeps the old index. Concurrent replacement of live
-tables belongs outside transactions and is not performed by `setup()`.
+```sql
+to_tsvector('<lang>', metadata->>'_text')
+```
+
+It also creates the vector index and a GIN index on `"search_tsv"`. `TextQuery`
+and hybrid queries use that column. This pinned fork keeps the mandatory lexical
+`@@` gate and exact `where`/`params` HybridQuery behavior from `0.15.0.1`.
+
+Writes keep inserting only `id`, `metadata`, and the vector field. PostgreSQL
+computes `search_tsv` automatically. The vector field name cannot be
+`search_tsv`.
+
+Existing stores must run `setup()` or an equivalent schema upgrade before text
+or hybrid queries against this version. Tables without `search_tsv` fail at
+query time.
+
+Existing tables created before this change get the column through:
+
+```sql
+ALTER TABLE "<table>"
+ADD COLUMN IF NOT EXISTS "search_tsv" tsvector
+GENERATED ALWAYS AS (to_tsvector('<lang>', metadata->>'_text')) STORED;
+```
+
+That backfills existing rows and takes an `ACCESS EXCLUSIVE` lock. Concurrent
+replacement of live tables is not performed by `setup()`.
+
+`ADD COLUMN IF NOT EXISTS` keeps an existing `search_tsv` column unchanged,
+including its generation language. Changing language later needs an explicit
+rebuild of that column and its GIN index; it is not automated by `setup()`.
+
+The GIN index uses `<table>_search_tsv_gin` when that fits PostgreSQL's 63-byte
+identifier limit. Longer table names use a deterministic SHA-256 prefix of the
+full table name plus `_search_tsv_gin`. That name is distinct from the earlier
+expression-index name (`*_text_gin`), so `CREATE INDEX IF NOT EXISTS` cannot
+silently keep an old expression index under the new name.
+
+A prior expression GIN (`*_text_gin`) is retained after upgrade. Remove it
+separately once the column-backed index is in place if you want to avoid
+duplicate index maintenance and write costs.
 
 pgvector Documentation
 ----------------------
 
  * [pgvector (operators, indexes, vector/halfvec types)](https://github.com/pgvector/pgvector)
  * [PostgreSQL full-text search](https://www.postgresql.org/docs/current/textsearch.html)
- * [Creating matching full-text expression indexes](https://www.postgresql.org/docs/current/textsearch-tables.html#TEXTSEARCH-TABLES-INDEX)
+ * [Stored generated text-search columns](https://www.postgresql.org/docs/current/textsearch-tables.html#TEXTSEARCH-TABLES-INDEX)
  * [Preferred full-text index types (GIN)](https://www.postgresql.org/docs/current/textsearch-indexes.html)
 
 Resources
