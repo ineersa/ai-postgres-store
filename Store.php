@@ -388,24 +388,33 @@ final class Store implements ManagedStoreInterface, StoreInterface
         }
 
         $where = [] !== $whereClauses ? 'WHERE '.implode(' AND ', $whereClauses) : '';
-
-        $sql = \sprintf(<<<SQL
-            SELECT id, "%s" AS embedding, metadata,
-                   ((:semantic_ratio * (1 - ("%s" %s :embedding))) +
-                    (:keyword_ratio * ts_rank(%s, %s))) AS score
-            FROM "%s"
-            %s
-            ORDER BY score DESC
-            LIMIT %d
-            SQL,
-            $this->vectorFieldName,
+        $scoreExpression = \sprintf(
+            '((:semantic_ratio * (1 - ("%s" %s :embedding))) + (:keyword_ratio * ts_rank(%s, %s)))',
             $this->vectorFieldName,
             $this->metric->getComparisonSign(),
             $tsvectorExpression,
             $tsqueryExpression,
+        );
+
+        // Score every eligible row first, then fetch embedding/metadata only for the selected IDs.
+        $sql = \sprintf(<<<SQL
+            SELECT documents.id, documents."%s" AS embedding, documents.metadata, ranked.score
+            FROM (
+                SELECT id, %s AS score
+                FROM "%s"
+                %s
+                ORDER BY score DESC
+                LIMIT %d
+            ) ranked
+            INNER JOIN "%s" documents ON documents.id = ranked.id
+            ORDER BY ranked.score DESC
+            SQL,
+            $this->vectorFieldName,
+            $scoreExpression,
             $this->tableName,
             $where,
             $options['limit'] ?? 5,
+            $this->tableName,
         );
 
         $statement = $this->getConnection()->prepare($sql);

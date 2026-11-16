@@ -1026,12 +1026,16 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
-                   ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
-                    (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
-            FROM \"embeddings_table\"
-            ORDER BY score DESC
-            LIMIT 5";
+        $expectedQuery = "SELECT documents.id, documents.\"embedding\" AS embedding, documents.metadata, ranked.score
+            FROM (
+                SELECT id, ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) + (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
+                FROM \"embeddings_table\"
+                
+                ORDER BY score DESC
+                LIMIT 5
+            ) ranked
+            INNER JOIN \"embeddings_table\" documents ON documents.id = ranked.id
+            ORDER BY ranked.score DESC";
 
         $pdo->expects($this->once())
             ->method('prepare')
@@ -1065,13 +1069,16 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
-                   ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
-                    (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
-            FROM \"embeddings_table\"
-            WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0))
-            ORDER BY score DESC
-            LIMIT 5";
+        $expectedQuery = "SELECT documents.id, documents.\"embedding\" AS embedding, documents.metadata, ranked.score
+            FROM (
+                SELECT id, ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) + (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
+                FROM \"embeddings_table\"
+                WHERE \"search_tsv\" @@ (plainto_tsquery('english', :search_text_0))
+                ORDER BY score DESC
+                LIMIT 5
+            ) ranked
+            INNER JOIN \"embeddings_table\" documents ON documents.id = ranked.id
+            ORDER BY ranked.score DESC";
 
         $pdo->expects($this->once())
             ->method('prepare')
@@ -1105,13 +1112,16 @@ final class StoreTest extends TestCase
 
         $store = new Store($pdo, 'embeddings_table', 'embedding');
 
-        $expectedQuery = "SELECT id, \"embedding\" AS embedding, metadata,
-                   ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) +
-                    (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
-            FROM \"embeddings_table\"
-            WHERE (metadata->>'occurred_at')::bigint >= :after_ts AND (metadata->>'occurred_at')::bigint < :before_ts
-            ORDER BY score DESC
-            LIMIT 5";
+        $expectedQuery = "SELECT documents.id, documents.\"embedding\" AS embedding, documents.metadata, ranked.score
+            FROM (
+                SELECT id, ((:semantic_ratio * (1 - (\"embedding\" <-> :embedding))) + (:keyword_ratio * ts_rank(\"search_tsv\", (plainto_tsquery('english', :search_text_0))))) AS score
+                FROM \"embeddings_table\"
+                WHERE (metadata->>'occurred_at')::bigint >= :after_ts AND (metadata->>'occurred_at')::bigint < :before_ts
+                ORDER BY score DESC
+                LIMIT 5
+            ) ranked
+            INNER JOIN \"embeddings_table\" documents ON documents.id = ranked.id
+            ORDER BY ranked.score DESC";
 
         $pdo->expects($this->once())
             ->method('prepare')
